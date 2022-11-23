@@ -11,6 +11,7 @@ t_division    		= 'DIV'
 t_lparen   			= 'LPAREN'
 t_rparen   			= 'RPAREN'
 t_eof				= 'EOF'
+t_pow				= 'POW'
 
 class Error:
 	def __init__(self, pos_start, pos_end, error_name, details):
@@ -99,23 +100,26 @@ class Lexer:
 		while self.current_loc != None:
 			if self.current_loc in ' \t':
 				self.advance()
-			elif self.current_loc == '+':
-				tokens.append(Token(t_plus))
+			elif self.current_pos == '+':
+				tokens.append(Token(t_plus, pos_start=self.pos))
 				self.advance()
-			elif self.current_loc == '-':
-				tokens.append(Token(t_minus))
+			elif self.current_pos == '-':
+				tokens.append(Token(t_minus, pos_start=self.pos))
 				self.advance()
-			elif self.current_loc == '*':
-				tokens.append(Token(t_multplication))
+			elif self.current_pos == '*':
+				tokens.append(Token(t_multplication, pos_start=self.pos))
 				self.advance()
-			elif self.current_loc == '/':
-				tokens.append(Token(t_division))
+			elif self.current_pos == '/':
+				tokens.append(Token(t_division, pos_start=self.pos))
 				self.advance()
-			elif self.current_loc == '(':
-				tokens.append(Token(t_lparen))
+			elif self.current_pos == '^':
+				tokens.append(Token(t_pow, pos_start=self.pos))
 				self.advance()
-			elif self.current_loc == ')':
-				tokens.append(Token(t_rparen))
+			elif self.current_pos == '(':
+				tokens.append(Token(t_lparen, pos_start=self.pos))
+				self.advance()
+			elif self.current_pos == ')':
+				tokens.append(Token(t_rparen, pos_start=self.pos))
 				self.advance()
 			else:
 				char = self.current_loc
@@ -226,16 +230,45 @@ class Parser:
 			))
 		return res
    
-
-	def factor(self):
-		
+	def atom(self):
+		res = ParseResult()
 		tok = self.current_tok
 
 		if tok.type in (t_int, t_float):
+			res.register_advancement()
 			self.advance()
 			return res.success(NumberNode(tok))
 
-		return res.failure(error)
+		elif tok.type == t_lparen:
+			res.register_advancement()
+			self.advance()
+			expr = res.register(self.expr())
+			if res.error: return res
+			if self.current_tok.type == t_RPAREN:
+				res.register_advancement()
+				self.advance()
+				return res.success(expr)
+			else:
+				return res.failure(InvalidSyntaxError(
+					self.current_tok.pos_start, self.current_tok.pos_end,
+					"Expected ')'"
+				))
+
+	def factor(self):
+		res = ParseResult()
+		tok = self.current_tok
+
+		if tok.type in (t_PLUS, t_MINUS):
+			res.register_advancement()
+			self.advance()
+			factor = res.register(self.factor())
+			if res.error: return res
+			return res.success(UnaryOpNode(tok, factor))
+
+		return self.power()
+
+	def power(self):
+		return self.bin_op(self.call, (t_pow, ), self.factor)
 
 	def term(self):
 		return self.bin_op(self.factor, (t_multplication, t_division))
@@ -243,15 +276,19 @@ class Parser:
 	def expr(self):
 		return self.bin_op(self.factor, (t_plus, t_minus))
 
-	def bin_op(self, func, ops):
+	def bin_op(self, func_a, ops, func_b=None):
+		if func_b == None:
+			func_b = func_a
+		
 		res = ParseResult()
-		left = res.register(func())
+		left = res.register(func_a())
 		if res.error: return res
 
-		while self.current_tok.type in ops:
+		while self.current_tok.type in ops or (self.current_tok.type, self.current_tok.value) in ops:
 			op_tok = self.current_tok
-			res.register(self.advance())
-			right = res.register(func())
+			res.register_advancement()
+			self.advance()
+			right = res.register(func_b())
 			if res.error: return res
 			left = BinOpNode(left, op_tok, right)
 
@@ -307,9 +344,22 @@ class Number(Value):
 		else:
 			return None, Value.illegal_operation(self, other)
 
-	def divided_by(self, other):
+	def dived_by(self, other):
 		if isinstance(other, Number):
+			if other.value == 0:
+				return None, RTError(
+					other.pos_start, other.pos_end,
+					'Can not divide anything by 0',
+					self.context
+				)
+
 			return Number(self.value / other.value).set_context(self.context), None
+		else:
+			return None, Value.illegal_operation(self, other)
+
+	def powed_by(self, other):
+		if isinstance(other, Number):
+			return Number(self.value ** other.value).set_context(self.context), None
 		else:
 			return None, Value.illegal_operation(self, other)
 
@@ -338,9 +388,11 @@ class Interpreter:
 
 
 	def visit_BinOpNode(self, node, context):
-
+		res = RTResult()
 		left = res.register(self.visit(node.left_node, context))
+		if res.error: return res
 		right = res.register(self.visit(node.right_node, context))
+		if res.error: return res
 
 		if node.op_tok.type == t_plus:
 			result, error = left.added_to(right)
@@ -350,6 +402,8 @@ class Interpreter:
 			result, error = left.multed_by(right)
 		elif node.op_tok.type == t_division:
 			result, error = left.dived_by(right)
+		elif node.op_tok.type == t_pow:
+			result, error = left.powed_by(right)
 
 
 		return result
